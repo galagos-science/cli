@@ -31,30 +31,60 @@ def _resolve_project(cfg: Config, project: str | None) -> str:
     return pid
 
 
+def _walk_tree(tree: dict, prefix: str = "") -> list[tuple[str, int | None]]:
+    """Flatten the nested file-tree dict from /sandbox/list_files/ into
+    a list of (relative_path, size_or_none) tuples. Directories yield
+    None for size; files yield their byte size.
+    """
+    out: list[tuple[str, int | None]] = []
+    for name, value in sorted(tree.items()):
+        path = f"{prefix}{name}"
+        if isinstance(value, dict) and value.get("type") == "file":
+            out.append((path, value.get("size")))
+        elif isinstance(value, dict):
+            # Subdirectory — recurse. Show the directory itself too so empty
+            # directories are visible.
+            if not value:
+                out.append((path + "/", None))
+            else:
+                out.extend(_walk_tree(value, prefix=path + "/"))
+    return out
+
+
 @app.command("ls")
 def ls(
     project: str = typer.Option(None, "--project", "-p"),
+    path: str = typer.Option(
+        None, "--path",
+        help="Only list paths under this prefix (e.g. 'results').",
+    ),
 ):
-    """List files known to the project (UserFile records)."""
+    """List files in the project's sandbox workspace.
+
+    Hits /sandbox/list_files/, which runs `find` inside the container —
+    same endpoint the web file panel uses. Reflects the real workspace
+    state, not just files tracked in the DB.
+    """
     cfg = Config.load()
     require_token(cfg)
     pid = _resolve_project(cfg, project)
     try:
-        data = get(cfg, "/user_project/files/", params={"project": pid})
+        tree = get(cfg, "/sandbox/list_files/", params={"projectId": pid})
     except ApiError as e:
         err_console.print(f"[red]Failed to list files: {e}[/red]")
         raise typer.Exit(code=1)
-    files = data.get("results", []) if isinstance(data, dict) else data
+    if not isinstance(tree, dict):
+        err_console.print("[yellow]Unexpected response shape.[/yellow]")
+        raise typer.Exit(code=1)
+    rows = _walk_tree(tree)
+    if path:
+        prefix = path.rstrip("/") + "/"
+        rows = [r for r in rows if r[0].startswith(prefix) or r[0] == path]
     table = Table(show_header=True, header_style="bold")
-    table.add_column("File")
-    table.add_column("Size", justify="right")
-    table.add_column("Path", style="dim")
-    for f in files:
-        table.add_row(
-            f.get("original_file_name") or f.get("file_name") or "?",
-            str(f.get("file_size") or ""),
-            f.get("file_path") or "",
-        )
+    table.add_column("Path")
+    table.add_column("Size", justify="right", style="dim")
+    for rel, size in rows:
+        table.add_row(rel, "" if size is None else str(size))
     console.print(table)
 
 
@@ -167,8 +197,7 @@ def put(
                     data = f.read(chunk_size)
                     r = c.put(
                         f"/user_project/upload_session/{sid}/chunks/{i}/",
-                        content=data,
-                        headers={"Content-Type": "application/octet-stream"},
+                        files={"chunk": (src.name, data, "application/octet-stream")},
                     )
                     if r.status_code >= 400:
                         err_console.print(

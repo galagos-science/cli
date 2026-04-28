@@ -46,7 +46,18 @@ def _resolve(cfg: Config, project: str | None, thread: str | None) -> tuple[str,
 def _render_event(payload: dict, *, show_tools: bool) -> None:
     """Render one SSE event payload to stdout."""
     evt_type = payload.get("type", "")
+    props = payload.get("properties") or {}
 
+    # OpenCode v2 streaming text: incremental delta on the "text" field of a part.
+    if evt_type == "message.part.delta":
+        if props.get("field") == "text":
+            delta = props.get("delta", "")
+            if delta:
+                sys.stdout.write(delta)
+                sys.stdout.flush()
+        return
+
+    # Legacy / alternative text event shape — kept for compatibility.
     if evt_type == "TEXT_MESSAGE_CONTENT":
         delta = payload.get("delta") or payload.get("data", {}).get("delta", "")
         if delta:
@@ -54,16 +65,28 @@ def _render_event(payload: dict, *, show_tools: bool) -> None:
             sys.stdout.flush()
         return
 
-    if evt_type == "CONNECTION_ESTABLISHED":
-        return  # Silent — handshake event.
+    if evt_type in ("CONNECTION_ESTABLISHED", "AGENT_HEARTBEAT"):
+        return
 
-    if evt_type == "AGENT_HEARTBEAT":
+    # Session/message lifecycle events — silent unless --tools.
+    if evt_type in ("session.updated", "session.status", "message.updated"):
         return
 
     if not show_tools:
         return
 
-    if evt_type == "OPENCODE_TOOL" or evt_type == "message.part.updated":
+    if evt_type == "message.part.updated":
+        part = props.get("part") or {}
+        ptype = part.get("type") or "?"
+        if ptype == "tool":
+            tool = part.get("tool") or "tool"
+            state = (part.get("state") or {}).get("status") or ""
+            err_console.print(f"[dim]· {tool} {state}[/dim]")
+        elif ptype in ("step-start", "step-finish"):
+            err_console.print(f"[dim]· {ptype}[/dim]")
+        return
+
+    if evt_type == "OPENCODE_TOOL":
         data = payload.get("data") or payload
         tool_name = data.get("tool") or data.get("name") or "tool"
         state = data.get("state") or data.get("status") or ""
