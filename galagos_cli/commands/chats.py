@@ -92,3 +92,28 @@ def use(thread_id: str = typer.Argument(..., help="Thread ID to set as default."
     cfg.default_thread_id = thread_id
     cfg.save()
     console.print(f"[green]✓[/green] Default thread set to {thread_id}")
+
+
+@app.command("cancel")
+def cancel(
+    project: str = typer.Option(None, "--project", "-p", help="Project ID."),
+    thread: str = typer.Option(None, "--thread", "-t", help="Thread ID."),
+):
+    """Cancel a thread that's currently processing."""
+    cfg = Config.load()
+    require_token(cfg)
+    pid = _resolve_project(cfg, project)
+    tid = thread or cfg.default_thread_id
+    if not tid:
+        console.print(
+            "[red]No thread selected.[/red] Pass --thread or "
+            "set one with `galagos chats use <id>`."
+        )
+        raise typer.Exit(code=1)
+    url = f"/session/projects/{pid}/threads/{tid}/cancel/"
+    try:
+        post(cfg, url, json={})
+    except ApiError as e:
+        console.print(f"[red]Cancel failed: {e}[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]✓[/green] Cancellation signal sent.")

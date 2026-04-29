@@ -1,6 +1,6 @@
 [project]
 name = "galagos-cli"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Command-line client for the Galagos AI bioinformatics platform."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "pexpect>=4.9",
     "ruff>=0.5",
 ]
 
@@ -39,6 +41,13 @@ ignore = ["E501", "B904"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+markers = [
+    "smoke: read-only test safe to run against any environment, including prod",
+    "e2e: black-box test that drives the installed `galagos` binary against a real backend",
+]
+# By default skip the e2e tier — opt in via `pytest tests/e2e` or
+# `pytest -m e2e`. Keeps `pytest` fast for unit-only runs.
+addopts = "--ignore=tests/e2e"
 
 [build-system]
 requires = ["hatchling"]

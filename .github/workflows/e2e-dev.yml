@@ -1,0 +1,48 @@
+name: E2E (dev)
+
+# Drives the installed CLI against https://dev.galagos.ai/api.
+# Soft-fails so dev outages don't block PRs.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 05:00 UTC daily — after the dev deploy idle window.
+    - cron: "0 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-dev
+  cancel-in-progress: true
+
+jobs:
+  e2e-dev:
+    runs-on: ubuntu-latest
+    # Soft-fail: surface red runs on the Actions tab without blocking PRs.
+    continue-on-error: true
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run e2e suite against dev
+        env:
+          GALAGOS_DEV_TOKEN: ${{ secrets.GALAGOS_DEV_TOKEN }}
+          GALAGOS_TEST_PROJECT_ID: ${{ secrets.GALAGOS_DEV_PROJECT_ID }}
+        run: |
+          if [ -z "$GALAGOS_DEV_TOKEN" ]; then
+            echo "GALAGOS_DEV_TOKEN secret not set — skipping."
+            exit 0
+          fi
+          pytest tests/e2e --env=dev -v --maxfail=3

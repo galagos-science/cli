@@ -28,8 +28,7 @@ def login(
         None,
         "--base-url",
         "-u",
-        help="API base URL (e.g. https://app.galagos.ai/api). "
-             "Saved to config.",
+        help="API base URL (e.g. https://app.galagos.ai/api). Saved to the profile.",
     ),
     token: str = typer.Option(
         None,
@@ -37,9 +36,20 @@ def login(
         "-t",
         help="Paste token non-interactively (otherwise prompted).",
     ),
+    profile: str = typer.Option(
+        None,
+        "--profile",
+        help="Profile to update. Defaults to the active profile (set via "
+             "the global --profile flag, GALAGOS_PROFILE env, or default_profile).",
+    ),
+    set_default: bool = typer.Option(
+        False,
+        "--default",
+        help="Also make this the default profile after a successful login.",
+    ),
 ):
-    """Save API token and base URL to ~/Library/.../galagos/config.toml."""
-    cfg = Config.load()
+    """Save the API token and base URL into a profile in config.toml."""
+    cfg = Config.load(profile=profile)
     if base_url:
         cfg.base_url = base_url.rstrip("/")
     console.print(
@@ -67,17 +77,25 @@ def login(
         )
         raise typer.Exit(code=1)
     user = r.json()
+    if set_default:
+        cfg.set_default(cfg.active_name)
     cfg.save()
     email = user.get("email") or user.get("username") or "(unknown)"
-    console.print(f"[green]✓[/green] Logged in as [bold]{email}[/bold]")
+    console.print(
+        f"[green]✓[/green] Logged in as [bold]{email}[/bold] "
+        f"(profile [cyan]{cfg.active_name}[/cyan])"
+    )
 
 
 @app.command("whoami")
 def whoami():
-    """Show the currently configured user."""
+    """Show the user authenticated by the active profile."""
     cfg = Config.load()
     if not cfg.token:
-        console.print("[yellow]Not logged in.[/yellow] Run `galagos auth login`.")
+        console.print(
+            f"[yellow]Not logged in[/yellow] (profile "
+            f"[cyan]{cfg.active_name}[/cyan]). Run `galagos auth login`."
+        )
         raise typer.Exit(code=1)
     try:
         with client(cfg) as c:
@@ -90,6 +108,7 @@ def whoami():
         raise typer.Exit(code=1)
     user = r.json()
     console.print(f"[bold]{user.get('email', '?')}[/bold]")
+    console.print(f"  profile:  {cfg.active_name}")
     console.print(f"  base_url: {cfg.base_url}")
     if cfg.default_project_id:
         console.print(f"  default project: {cfg.default_project_id}")
@@ -98,9 +117,17 @@ def whoami():
 
 
 @app.command("logout")
-def logout():
-    """Forget the saved token."""
-    cfg = Config.load()
+def logout(
+    profile: str = typer.Option(
+        None, "--profile",
+        help="Profile to clear. Defaults to the active profile.",
+    ),
+):
+    """Forget the saved token on the active (or named) profile."""
+    cfg = Config.load(profile=profile)
     cfg.token = None
     cfg.save()
-    console.print("[green]✓[/green] Token removed from config.")
+    console.print(
+        f"[green]✓[/green] Token cleared on profile "
+        f"[cyan]{cfg.active_name}[/cyan]."
+    )

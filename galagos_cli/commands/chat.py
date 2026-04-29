@@ -273,20 +273,7 @@ def chat_main(
     sys.stdout.write("\n")
 
 
-@app.command("cancel")
-def cancel(
-    project: str = typer.Option(None, "--project", "-p"),
-    thread: str = typer.Option(None, "--thread", "-t"),
-):
-    """Cancel a thread that's currently processing."""
-    cfg = Config.load()
-    require_token(cfg)
-    pid, tid = _resolve(cfg, project, thread)
-    url = f"/session/projects/{pid}/threads/{tid}/cancel/"
-    from ..client import ApiError, post
-    try:
-        post(cfg, url, json={})
-    except ApiError as e:
-        err_console.print(f"[red]Cancel failed: {e}[/red]")
-        raise typer.Exit(code=1)
-    console.print("[green]✓[/green] Cancellation signal sent.")
+# `cancel` lives on the `chats` typer (commands/chats.py) because the
+# `chat` typer accepts a positional MESSAGE and Typer can't disambiguate
+# `chat cancel --project X` between "chat with message='cancel'" and
+# "invoke the cancel subcommand". Use `galagos chats cancel ...`.

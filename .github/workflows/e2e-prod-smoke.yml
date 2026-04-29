@@ -1,0 +1,44 @@
+name: E2E smoke (prod)
+
+# Manual-trigger only. Runs only @pytest.mark.smoke tests against
+# https://app.galagos.ai/api. Reads-only by construction (the conftest
+# guard auto-enables --smoke-only when --env=prod).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-prod
+  cancel-in-progress: false
+
+jobs:
+  e2e-prod-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run prod smoke tests
+        env:
+          GALAGOS_PROD_TOKEN: ${{ secrets.GALAGOS_PROD_TOKEN }}
+          GALAGOS_TEST_PROJECT_ID: ${{ secrets.GALAGOS_PROD_PROJECT_ID }}
+        run: |
+          if [ -z "$GALAGOS_PROD_TOKEN" ]; then
+            echo "GALAGOS_PROD_TOKEN secret not set."
+            exit 1
+          fi
+          pytest tests/e2e --env=prod -v
