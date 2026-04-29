@@ -15,8 +15,30 @@ dependencies = [
     "tomli-w>=1.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
 [project.scripts]
 galagos = "galagos_cli.main:app"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501: line length — handled by formatter, not the linter.
+# B904: "raise ... from err" inside except — the CLI deliberately swallows
+# the original exception in favour of a friendly user-facing message; the
+# chained traceback would be noise to end users.
+ignore = ["E501", "B904"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
 
 [build-system]
 requires = ["hatchling"]

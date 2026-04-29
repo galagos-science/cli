@@ -5,7 +5,7 @@ are skipped. Multiline `data:` blocks are concatenated with newlines.
 """
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import httpx
 

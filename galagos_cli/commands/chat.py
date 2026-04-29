@@ -179,7 +179,7 @@ def cancel(
     require_token(cfg)
     pid, tid = _resolve(cfg, project, thread)
     url = f"/session/projects/{pid}/threads/{tid}/cancel/"
-    from ..client import post, ApiError
+    from ..client import ApiError, post
     try:
         post(cfg, url, json={})
     except ApiError as e:

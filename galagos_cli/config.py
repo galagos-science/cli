@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import tomli_w
@@ -27,7 +27,7 @@ class Config:
     default_thread_id: str | None = None
 
     @classmethod
-    def load(cls) -> "Config":
+    def load(cls) -> Config:
         cfg = cls()
         if env_url := os.environ.get("GALAGOS_API_URL"):
             cfg.base_url = env_url
