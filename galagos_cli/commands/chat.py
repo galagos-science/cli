@@ -215,17 +215,27 @@ def chat_main(
                         continue
 
                     evt_type = payload.get("type")
-                    if evt_type == "PERMISSION_REQUEST":
-                        try:
-                            ans = handle_permission_request(payload, mode)
-                        except InteractiveError as e:
-                            err_console.print(f"[red]{e}[/red]")
-                            raise typer.Exit(code=1)
-                        _post_permission_response(
-                            cfg, pid, tid, ans.request_id, ans.action
-                        )
+                    # Permission events: the backend currently auto-approves
+                    # `permission.asked` server-side, so the CLI typically
+                    # doesn't need to prompt. Kept for parity in case the
+                    # auto-approve is removed; legacy `PERMISSION_REQUEST`
+                    # is also accepted.
+                    if evt_type in ("PERMISSION_REQUEST", "permission.asked"):
+                        if show_tools:
+                            err_console.print(
+                                "[dim]· permission.asked (backend auto-approves)[/dim]"
+                            )
+                        # If the CLI is started with --no-interactive we still
+                        # honour it — better to fail loudly than to silently
+                        # depend on backend auto-approve.
+                        if mode is InteractivityMode.REFUSE:
+                            try:
+                                handle_permission_request(payload, mode)
+                            except InteractiveError as e:
+                                err_console.print(f"[red]{e}[/red]")
+                                raise typer.Exit(code=1)
                         continue
-                    if evt_type == "QUESTION_REQUEST":
+                    if evt_type in ("QUESTION_REQUEST", "question.asked"):
                         try:
                             ans = handle_question_request(payload, mode)
                         except InteractiveError as e:
@@ -235,7 +245,17 @@ def chat_main(
                             cfg, pid, tid, ans.request_id,
                             answers=ans.answers, reject=ans.reject,
                         )
+                        # In --no-interactive mode the agent has now been
+                        # unblocked via reject; exit non-zero so the caller
+                        # (CI, scripts) sees the failure.
+                        if mode is InteractivityMode.REFUSE:
+                            raise typer.Exit(code=1)
                         continue
+                    # The agent also emits an inline tool form via
+                    # message.part.updated with part.tool=="question". The
+                    # bus-level question.asked above is the canonical one,
+                    # so we ignore the inline form for prompting and let
+                    # _render_event surface it as a tool call under --tools.
 
                     _render_event(payload, show_tools=show_tools)
                     if evt_type in TERMINAL_TYPES:

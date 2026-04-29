@@ -1,12 +1,19 @@
-"""Interactive prompts for QUESTION_REQUEST and PERMISSION_REQUEST events.
+"""Interactive prompts for `question.asked` and `permission.asked` events.
 
 The Django chat-stream SSE pipeline can interrupt the agent's response with
-two event types that block until the user replies:
+two OpenCode-bus event types that block until the user replies:
 
-- PERMISSION_REQUEST: the agent wants to do something (run a command,
-  write a file) and waits for allow/deny.
-- QUESTION_REQUEST:   the agent wants the user to answer one or more
-  clarifying questions before continuing.
+- ``permission.asked``: the agent wants to do something (run a command,
+  write a file) and waits for allow/deny. NOTE: the backend currently
+  auto-approves these (see ``tasks_streaming.py``), so in practice the
+  CLI never needs to prompt — they're informational. Kept here for the
+  day the auto-approve is removed.
+- ``question.asked``:   the agent asks one or more clarifying questions
+  before continuing.
+
+The legacy event names ``PERMISSION_REQUEST`` / ``QUESTION_REQUEST`` and
+the legacy ``data.{id,questions}`` field shape are also accepted so the
+CLI keeps working against older backends.
 
 While the request is open the SSE stream stays connected; the agent resumes
 emitting events after the response is POSTed back through Django.
@@ -51,18 +58,33 @@ class QuestionAnswer:
     reject: bool = False
 
 
+def _payload_body(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the body dict for an event, preferring v2 ``properties`` over
+    the legacy ``data`` envelope."""
+    body = payload.get("properties")
+    if isinstance(body, dict) and body:
+        return body
+    body = payload.get("data")
+    return body if isinstance(body, dict) else {}
+
+
 # ─── Permission ─────────────────────────────────────────────────────────────
 
 def handle_permission_request(
     payload: dict[str, Any], mode: InteractivityMode
 ) -> PermissionAnswer:
-    data = payload.get("data") or {}
+    data = _payload_body(payload)
     request_id = str(data.get("id") or "")
     if not request_id:
         raise InteractiveError("Permission event missing request id.")
 
-    tool_name = (data.get("tool") or {}).get("name") or "tool"
-    kind = data.get("kind") or "permission"
+    tool_data = data.get("tool")
+    tool_name = (
+        (tool_data.get("name") if isinstance(tool_data, dict) else None)
+        or data.get("permission")
+        or "tool"
+    )
+    kind = data.get("kind") or data.get("permission") or "permission"
     message = data.get("message") or ""
     allow_text = data.get("allowText") or ""
 
@@ -108,7 +130,7 @@ def handle_permission_request(
 def handle_question_request(
     payload: dict[str, Any], mode: InteractivityMode
 ) -> QuestionAnswer:
-    data = payload.get("data") or {}
+    data = _payload_body(payload)
     request_id = str(data.get("id") or "")
     if not request_id:
         raise InteractiveError("Question event missing request id.")
@@ -118,16 +140,21 @@ def handle_question_request(
         # fall back to a sensible default rather than hanging forever.
         return QuestionAnswer(request_id=request_id, reject=True)
 
-    if mode in (InteractivityMode.YES, InteractivityMode.REFUSE):
+    if mode is InteractivityMode.YES:
         # Questions need real input — auto-yes is meaningless. Reject so
         # the agent unblocks rather than hanging the run.
-        if mode is InteractivityMode.REFUSE:
-            raise InteractiveError(
-                "Agent asked a clarifying question but --no-interactive is set."
-            )
         err.print(
             "[yellow]Agent asked a question; auto-rejecting under --yes "
             "(questions need real input).[/yellow]"
+        )
+        return QuestionAnswer(request_id=request_id, reject=True)
+    if mode is InteractivityMode.REFUSE:
+        # Reject so the agent unblocks and the session leaves PROCESSING,
+        # but the caller will still exit non-zero. The error message goes
+        # via the caller after we POST the rejection.
+        err.print(
+            "[red]Agent asked a clarifying question but --no-interactive is "
+            "set.[/red]"
         )
         return QuestionAnswer(request_id=request_id, reject=True)
 
