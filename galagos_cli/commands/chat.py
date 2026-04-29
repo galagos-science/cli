@@ -8,8 +8,14 @@ import httpx
 import typer
 from rich.console import Console
 
-from ..client import require_token, stream_client
+from ..client import client, require_token, stream_client
 from ..config import Config
+from ..interactive import (
+    InteractiveError,
+    InteractivityMode,
+    handle_permission_request,
+    handle_question_request,
+)
 from ..sse import iter_sse
 
 app = typer.Typer(invoke_without_command=True, help="Chat with the agent.")
@@ -102,6 +108,41 @@ def _render_event(payload: dict, *, show_tools: bool) -> None:
         err_console.print(f"[red]error:[/red] {msg}")
 
 
+def _post_permission_response(
+    cfg: Config, pid: str, tid: str, request_id: str, action: str
+) -> None:
+    url = f"/session/projects/{pid}/threads/{tid}/permission/respond/"
+    with client(cfg, timeout=30) as c:
+        r = c.post(url, json={"request_id": request_id, "action": action})
+        if r.status_code >= 400:
+            err_console.print(
+                f"[red]Permission response failed (HTTP {r.status_code}): {r.text}[/red]"
+            )
+
+
+def _post_question_response(
+    cfg: Config,
+    pid: str,
+    tid: str,
+    request_id: str,
+    *,
+    answers: list[list[str]] | None,
+    reject: bool,
+) -> None:
+    url = f"/session/projects/{pid}/threads/{tid}/question/respond/"
+    body: dict = {"request_id": request_id}
+    if reject:
+        body["action"] = "reject"
+    else:
+        body["answers"] = answers or []
+    with client(cfg, timeout=30) as c:
+        r = c.post(url, json=body)
+        if r.status_code >= 400:
+            err_console.print(
+                f"[red]Question response failed (HTTP {r.status_code}): {r.text}[/red]"
+            )
+
+
 @app.callback()
 def chat_main(
     ctx: typer.Context,
@@ -116,6 +157,14 @@ def chat_main(
         False, "--tools/--no-tools",
         help="Print tool-call activity to stderr.",
     ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y",
+        help="Auto-allow permission requests; reject questions (they need input).",
+    ),
+    no_interactive: bool = typer.Option(
+        False, "--no-interactive",
+        help="Fail loudly if the agent asks a question or for permission.",
+    ),
 ):
     """Send a message and print the agent's streamed reply to stdout."""
     if ctx.invoked_subcommand is not None:
@@ -123,6 +172,17 @@ def chat_main(
     cfg = Config.load()
     require_token(cfg)
     pid, tid = _resolve(cfg, project, thread)
+
+    if yes and no_interactive:
+        err_console.print(
+            "[red]--yes and --no-interactive are mutually exclusive.[/red]"
+        )
+        raise typer.Exit(code=2)
+    mode = (
+        InteractivityMode.REFUSE if no_interactive
+        else InteractivityMode.YES if yes
+        else InteractivityMode.PROMPT
+    )
 
     body: dict = {"agent": agent, "last_event_id": "0"}
     if resume:
@@ -153,8 +213,32 @@ def chat_main(
                         payload = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+
+                    evt_type = payload.get("type")
+                    if evt_type == "PERMISSION_REQUEST":
+                        try:
+                            ans = handle_permission_request(payload, mode)
+                        except InteractiveError as e:
+                            err_console.print(f"[red]{e}[/red]")
+                            raise typer.Exit(code=1)
+                        _post_permission_response(
+                            cfg, pid, tid, ans.request_id, ans.action
+                        )
+                        continue
+                    if evt_type == "QUESTION_REQUEST":
+                        try:
+                            ans = handle_question_request(payload, mode)
+                        except InteractiveError as e:
+                            err_console.print(f"[red]{e}[/red]")
+                            raise typer.Exit(code=1)
+                        _post_question_response(
+                            cfg, pid, tid, ans.request_id,
+                            answers=ans.answers, reject=ans.reject,
+                        )
+                        continue
+
                     _render_event(payload, show_tools=show_tools)
-                    if payload.get("type") in TERMINAL_TYPES:
+                    if evt_type in TERMINAL_TYPES:
                         break
     except KeyboardInterrupt:
         err_console.print(
