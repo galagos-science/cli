@@ -105,12 +105,16 @@ def test_interactive_pexpect_round_trip(
         # Wait for the prompt line — ``pick (one number, …): ``.
         child.expect(r"pick \(", timeout=180)
         child.sendline("1")
-        # After the answer is POSTed the agent resumes streaming. The
-        # follow-up text should include the picked option label ("A").
-        # We give the model up to 90s to respond after answering.
-        child.expect(r"(?i)\bA\b", timeout=90)
-        # Read remaining output until exit.
-        child.expect(pexpect.EOF, timeout=60)
+        # After the answer is POSTed the agent resumes streaming. We
+        # don't try to predict the exact follow-up text (the agent may
+        # say "Option A", "Morning", "the first one", etc. depending on
+        # how it phrases the option labels). Just wait for the process
+        # to exit cleanly.
+        child.expect(pexpect.EOF, timeout=180)
+        assert child.exitstatus == 0, (
+            f"chat exited non-zero after answering question: "
+            f"{child.exitstatus}"
+        )
     finally:
         child.close(force=True)
 
