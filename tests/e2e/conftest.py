@@ -18,8 +18,13 @@ Authentication tokens come from:
 
 - ``--env=local``: minted on demand inside the running ``backend_web``
   container via ``docker compose exec web python manage.py shell``.
-- ``--env=dev``:   ``GALAGOS_DEV_TOKEN`` env var.
-- ``--env=prod``:  ``GALAGOS_PROD_TOKEN`` env var.
+  The harness picks the most-recently-active user; in CI / shared dev
+  setups consider seeding ``michael@galagos.ai`` so behaviour matches
+  remote envs.
+- ``--env=dev``:   ``GALAGOS_DEV_TOKEN`` env var. Canonical user is
+  ``michael@galagos.ai`` — mint that user's token and use it.
+- ``--env=prod``:  ``GALAGOS_PROD_TOKEN`` env var. Canonical user is
+  also ``michael@galagos.ai``.
 
 Missing tokens cause the relevant tests to ``pytest.skip``, not fail.
 """
@@ -133,14 +138,20 @@ def cli_config_dir(tmp_path_factory) -> Path:
 # ─── Token bootstrap ───────────────────────────────────────────────────────
 
 
+CANONICAL_TEST_USER = "michael@galagos.ai"
+
+
 def _mint_token_via_django_shell(backend_dir: Path) -> tuple[str, str]:
-    """Mint a token for the first user via `docker compose exec web` and
-    return (email, token_key). Raises CalledProcessError on failure."""
+    """Mint a token for the canonical e2e user via `docker compose exec web`
+    and return (email, token_key). Falls back to the first active user on
+    local-only setups where the canonical user doesn't exist."""
     script = textwrap.dedent(
-        """
+        f"""
         from rest_framework.authtoken.models import Token
         from apps.core.models import CustomUser
-        u = CustomUser.objects.filter(is_active=True).first()
+        u = CustomUser.objects.filter(email='{CANONICAL_TEST_USER}', is_active=True).first()
+        if u is None:
+            u = CustomUser.objects.filter(is_active=True).first()
         if not u:
             raise SystemExit('No active user found in local DB.')
         t, _ = Token.objects.get_or_create(user=u)
@@ -309,46 +320,115 @@ def agent_cli(cli_env):
 # ─── Test data fixtures ────────────────────────────────────────────────────
 
 
-@pytest.fixture(scope="session")
-def e2e_project(cli_env, target_env, bootstrap_token):
-    """Pick a project ID for the test suite. Strategy:
+def _provision_e2e_project(
+    base_url: str, token: str, *, name: str, ready_timeout_s: int = 600
+) -> str:
+    """Create a fresh project via POST /user_project/projects/, then poll
+    /sandbox/list_files/ until it answers 200 (i.e. the sandbox executor
+    is reachable). Returns the new project id.
 
-    - ``local``: query /user_project/projects/, pick the first; if empty,
-      skip with a hint about ``manage.py bootstrap_local``.
-    - ``dev``/``prod``: same, but if ``GALAGOS_TEST_PROJECT_ID`` is set
-      use that instead — lets CI pin a known sandbox.
+    Provisioning a fresh sandbox can take 30–120s on a warm registry and
+    longer on a cold pull, hence the generous default.
+    """
+    import time as _t
+
+    import httpx
+
+    headers = {
+        "Authorization": f"Token {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    with httpx.Client(base_url=base_url, headers=headers, timeout=30.0) as c:
+        r = c.post("/user_project/projects/", json={"name": name})
+        if r.status_code >= 400:
+            pytest.skip(
+                f"Could not create test project: HTTP {r.status_code} {r.text}"
+            )
+        body = r.json()
+        pid = body.get("id")
+        if not pid:
+            pytest.skip(f"Project create returned no id: {body!r}")
+
+        # Poll list_files as a liveness probe. 200 means the executor is
+        # up and the sandbox is responding to remote bash. The agent
+        # container in the same stack is started concurrently, so by the
+        # time files come up the agent is usually ready or seconds away.
+        deadline = _t.time() + ready_timeout_s
+        last = "starting"
+        while _t.time() < deadline:
+            try:
+                r = c.get(
+                    "/sandbox/list_files/",
+                    params={"projectId": pid},
+                    timeout=15.0,
+                )
+            except httpx.RequestError as e:
+                last = f"request error: {e}"
+                _t.sleep(3)
+                continue
+            if r.status_code == 200:
+                # Give the agent a few seconds head-start so chat tests
+                # don't race the agent's first poll.
+                _t.sleep(5)
+                return pid
+            # 503 with agent_starting is the expected "not yet" signal.
+            try:
+                last = f"HTTP {r.status_code} body={r.json()}"
+            except ValueError:
+                last = f"HTTP {r.status_code}"
+            _t.sleep(5)
+        pytest.skip(
+            f"Sandbox for {pid} did not become reachable within "
+            f"{ready_timeout_s}s (last={last})"
+        )
+
+
+def _delete_project(base_url: str, token: str, pid: str) -> None:
+    """Best-effort cleanup. Failures are logged but don't fail the suite."""
+    try:
+        import httpx
+        with httpx.Client(
+            base_url=base_url,
+            headers={"Authorization": f"Token {token}"},
+            timeout=30.0,
+        ) as c:
+            c.delete(f"/user_project/projects/{pid}/")
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Could not delete e2e project {pid}: {e}", stacklevel=1)
+
+
+@pytest.fixture(scope="session")
+def e2e_project(target_env, bootstrap_token):
+    """Provision a fresh project for the test session and tear it down on
+    exit. Strategy:
+
+    - ``GALAGOS_TEST_PROJECT_ID`` env var overrides creation entirely
+      (useful for pinning a known-warm project in CI).
+    - Otherwise: ``POST /user_project/projects/`` with a unique name,
+      poll until the sandbox is RUNNING, return the id. Delete on
+      session teardown unless ``GALAGOS_KEEP_TEST_PROJECT=1``.
     """
     if pid := os.environ.get("GALAGOS_TEST_PROJECT_ID"):
-        return pid
+        yield pid
+        return
 
-    binary = _galagos_binary()
-    proc = subprocess.run(
-        [binary, "projects", "ls", "--no-pager"]
-        if False  # keep --no-pager out of the contract until we add it
-        else [binary, "projects", "ls"],
-        env=cli_env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if proc.returncode != 0:
+    if not target_env.allow_mutations:
+        # Prod is read-only by construction; pinning is required there.
         pytest.skip(
-            f"Could not list projects: rc={proc.returncode} "
-            f"stderr={proc.stderr.strip()}"
+            "Provisioning a project on a read-only env is forbidden. "
+            "Set GALAGOS_TEST_PROJECT_ID to a known prod-safe project."
         )
-    # Crude UUID extraction from the rich-rendered table.
-    import re
-    uuids = re.findall(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        proc.stdout,
-    )
-    if not uuids:
-        pytest.skip(
-            f"No projects available on {target_env.name}. "
-            f"For local: run `python manage.py bootstrap_local`. "
-            f"For dev/prod: set GALAGOS_TEST_PROJECT_ID."
-        )
-    return uuids[0]
+
+    import time as _t
+    name = f"cli-e2e-{int(_t.time())}"
+    pid = _provision_e2e_project(target_env.base_url, bootstrap_token, name=name)
+    try:
+        yield pid
+    finally:
+        if not os.environ.get("GALAGOS_KEEP_TEST_PROJECT"):
+            _delete_project(target_env.base_url, bootstrap_token, pid)
 
 
 @pytest.fixture
