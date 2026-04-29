@@ -117,3 +117,40 @@ def cancel(
         console.print(f"[red]Cancel failed: {e}[/red]")
         raise typer.Exit(code=1)
     console.print("[green]✓[/green] Cancellation signal sent.")
+
+
+@app.command("wake")
+def wake(
+    project: str = typer.Option(None, "--project", "-p", help="Project ID."),
+    timeout: int = typer.Option(
+        600, "--timeout",
+        help="Maximum seconds to wait for the sandbox to reach RUNNING.",
+    ),
+):
+    """Wake up a paused sandbox and wait until it's ready.
+
+    A no-op if the sandbox is already RUNNING.
+    """
+    from ..sandbox import ensure_running, get_sandbox_status
+
+    cfg = Config.load()
+    require_token(cfg)
+    pid = _resolve_project(cfg, project)
+
+    status = get_sandbox_status(cfg, pid)
+    if status == "RUNNING":
+        console.print("[green]✓[/green] Sandbox is already running.")
+        return
+    if status is None:
+        console.print(
+            "[red]Project has no sandbox.[/red] Create the project's "
+            "sandbox via the web UI first."
+        )
+        raise typer.Exit(code=1)
+    console.print(f"Current status: [yellow]{status}[/yellow]")
+    try:
+        ensure_running(cfg, pid, timeout_s=timeout)
+    except (RuntimeError, TimeoutError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print("[green]✓[/green] Sandbox is up and ready.")

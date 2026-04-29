@@ -16,6 +16,7 @@ from ..interactive import (
     handle_permission_request,
     handle_question_request,
 )
+from ..sandbox import ensure_running
 from ..sse import iter_sse
 
 app = typer.Typer(invoke_without_command=True, help="Chat with the agent.")
@@ -194,6 +195,16 @@ def chat_main(
             )
             raise typer.Exit(code=1)
         body["content"] = message
+
+    # Wake the project's sandbox if it's paused. Cheap no-op when it's
+    # already running. Skipped for --resume because the user's already
+    # connected to an in-flight stream and the sandbox must already be up.
+    if not resume:
+        try:
+            ensure_running(cfg, pid)
+        except (RuntimeError, TimeoutError) as e:
+            err_console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
 
     url = f"/session/projects/{pid}/threads/{tid}/chat/"
     last_event_id = "0"
