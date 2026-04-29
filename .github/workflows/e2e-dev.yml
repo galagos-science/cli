@@ -39,10 +39,11 @@ jobs:
       - name: Run e2e suite against dev
         env:
           GALAGOS_DEV_TOKEN: ${{ secrets.GALAGOS_DEV_TOKEN }}
-          GALAGOS_TEST_PROJECT_ID: ${{ secrets.GALAGOS_DEV_PROJECT_ID }}
         run: |
           if [ -z "$GALAGOS_DEV_TOKEN" ]; then
             echo "GALAGOS_DEV_TOKEN secret not set — skipping."
             exit 0
           fi
+          # The harness always provisions a fresh `cli-e2e-<ts>` project
+          # for the session and deletes it on teardown.
           pytest tests/e2e --env=dev -v --maxfail=3

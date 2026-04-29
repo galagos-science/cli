@@ -35,10 +35,12 @@ jobs:
       - name: Run prod smoke tests
         env:
           GALAGOS_PROD_TOKEN: ${{ secrets.GALAGOS_PROD_TOKEN }}
-          GALAGOS_TEST_PROJECT_ID: ${{ secrets.GALAGOS_PROD_PROJECT_ID }}
         run: |
           if [ -z "$GALAGOS_PROD_TOKEN" ]; then
             echo "GALAGOS_PROD_TOKEN secret not set."
             exit 1
           fi
+          # Prod is mutation-forbidden; only @pytest.mark.smoke tests that
+          # don't request the e2e_project fixture run here. The conftest
+          # auto-enables --smoke-only when --env=prod.
           pytest tests/e2e --env=prod -v

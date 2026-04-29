@@ -14,6 +14,14 @@ The harness writes its own throwaway TOML config at
 ``XDG_CONFIG_HOME`` (Linux) / ``HOME`` (macOS) — the developer's real
 config is never touched.
 
+**Project lifecycle**: every session that requests ``e2e_project``
+provisions a brand-new ``cli-e2e-<unix-ts>`` project via the API,
+waits for its sandbox to come up, runs the tests, and deletes the
+project on teardown. There's no override; tests are intentionally
+isolated from any pre-existing project state. Set
+``GALAGOS_KEEP_TEST_PROJECT=1`` to skip the teardown delete (post-mortem
+debugging only).
+
 Authentication tokens come from:
 
 - ``--env=local``: minted on demand inside the running ``backend_web``
@@ -401,24 +409,25 @@ def _delete_project(base_url: str, token: str, pid: str) -> None:
 
 @pytest.fixture(scope="session")
 def e2e_project(target_env, bootstrap_token):
-    """Provision a fresh project for the test session and tear it down on
-    exit. Strategy:
+    """Always provision a fresh project for the test session, no exceptions.
 
-    - ``GALAGOS_TEST_PROJECT_ID`` env var overrides creation entirely
-      (useful for pinning a known-warm project in CI).
-    - Otherwise: ``POST /user_project/projects/`` with a unique name,
-      poll until the sandbox is RUNNING, return the id. Delete on
-      session teardown unless ``GALAGOS_KEEP_TEST_PROJECT=1``.
+    Skipping shared / pinned projects keeps the laptop and shared envs
+    clean and avoids tests passing for the wrong reason against a stale
+    sandbox state. Set ``GALAGOS_KEEP_TEST_PROJECT=1`` to retain the
+    project after the session for post-mortem inspection; otherwise the
+    fixture deletes it on teardown.
+
+    Prod is read-only by design (``allow_mutations=False``) — running
+    the fixture there is forbidden, and project-dependent tests skip.
+    Prod smoke runs should target only ``@pytest.mark.smoke`` cases that
+    don't request this fixture.
     """
-    if pid := os.environ.get("GALAGOS_TEST_PROJECT_ID"):
-        yield pid
-        return
-
     if not target_env.allow_mutations:
-        # Prod is read-only by construction; pinning is required there.
         pytest.skip(
-            "Provisioning a project on a read-only env is forbidden. "
-            "Set GALAGOS_TEST_PROJECT_ID to a known prod-safe project."
+            "e2e_project always provisions a fresh project; that's a "
+            "mutation, which is forbidden on a read-only env. "
+            "Mark this test @pytest.mark.smoke and avoid e2e_project "
+            "if it should run against prod."
         )
 
     import time as _t
